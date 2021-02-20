@@ -1,4 +1,4 @@
-exp_id = '/storage/brno2/home/ruzicji6';
+exp_id = 'aaaZkouska';
 exp_description = 'Fixed (non-adaptive) DTS-CMA-ES based on exp_doubleEC_26_1model, albeit testing multiple GP kernels. Enable logging of populations.';
 
 % BBOB/COCO framework settings
