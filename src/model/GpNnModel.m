@@ -35,7 +35,8 @@ classdef GpNnModel < Model
     dimReduction          % Reduce dimensionality for model by eigenvectors
                           % of covatiance matrix in percentage
     reductionMatrix       % Matrix used for dimensionality reduction
-    a
+
+    model
   end
 
   properties (Access = protected)
@@ -47,7 +48,8 @@ classdef GpNnModel < Model
   methods (Access = public)
     function obj = GpNnModel(modelOptions, xMean)
       % constructor
-      assert(size(xMean,1) == 1, 'GpModel(constructor): xMean is not a row-vector.');
+      assert(size(xMean,1) == 1, 'GpNnModel(constructor): xMean is not a row-vector.');
+
       % modelOpts structure
       if (isempty(modelOptions))
         obj.options = struct();
@@ -67,7 +69,7 @@ classdef GpNnModel < Model
 
       if (strcmpi(obj.options.trainAlgorithm, 'fmincon') ...
           && ~license('checkout', 'optimization_toolbox'))
-        fprintf('GpModel(constructor): Optimization Toolbox license not available. Switching to minimize().\n');
+        fprintf('GpNnModel(constructor): Optimization Toolbox license not available. Switching to minimize().\n');
         obj.options.trainAlgorithm = 'minimize';
       end
 
@@ -196,6 +198,13 @@ classdef GpNnModel < Model
       obj.predictionType = defopts(modelOptions, 'predictionType', 'fValues');
       obj.transformCoordinates = defopts(modelOptions, 'transformCoordinates', true);
       obj.dimReduction = defopts(modelOptions, 'dimReduction', 1);      % 1.0 == no dimensionality reduction
+
+      % networks constructor
+      sk_gp = py.importlib.import_module('src');
+      sk_gp = py.importlib.import_module('src.models');
+      sk_gp = py.importlib.import_module('src.models.surrogate');
+      sk_gp = py.importlib.import_module('src.models.sk_gp');
+      obj.model =  sk_gp.SkGPSurrogate();
     end
 
     function obj = clone(obj, obj2)
@@ -232,26 +241,24 @@ classdef GpNnModel < Model
     end
 
     function obj = trainModel(obj, X, y, xMean, generation, ~)
-        obj = trainModel2(obj, X, y, xMean, generation)
-        assignin('base','obj',obj)
-    end
-    function obj = trainModel2(obj, X, y, xMean, generation, ~)
       % train the GP model based on the data (X,y)
       % TODO
       %   [ ] implement choosing the best covariance function according to
       %       the test ordinal regression capabilities
       global modelTrainNErrors;
-      assert(size(xMean,1) == 1, 'GpModel.train(): xMean is not a row-vector.');
+
+      assert(size(xMean,1) == 1, 'GpNnModel.train(): xMean is not a row-vector.');
       obj.trainMean = xMean;
       if (~isempty(X) && ~isempty(y))
         obj.dataset.X = X;
         obj.dataset.y = y;
       end
+
       % normalize y if specified, @meanZero, or if large y-scale
       % (at least for CMA-ES hyperparameter optimization)
       if (~obj.options.normalizeY ...
           && (isequal(obj.meanFcn, @meanZero) || (max(obj.dataset.y) - min(obj.dataset.y)) > 1e4))
-        fprintf(2, 'GpModel.train(): Y-Normalization is switched ON for @meanZero covariance function of large Y-scale.\n');
+        fprintf(2, 'GpNnModel.train(): Y-Normalization is switched ON for @meanZero covariance function of large Y-scale.\n');
         obj.options.normalizeY = true;
       end
       if (obj.options.normalizeY)
@@ -321,8 +328,6 @@ classdef GpNnModel < Model
 
         % gp() with linearized version of the hyper-parameters
         f = @(par) linear_gp(par, obj.hyp, obj.infFcn, obj.meanFcn, obj.covFcn, obj.likFcn, obj.getDataset_X(), yTrain, linear_hyp_start, const_hyp_idx);
-        assignin('base','params',{obj.hyp, obj.infFcn, obj.meanFcn, obj.covFcn, obj.likFcn, obj.getDataset_X(), yTrain, linear_hyp_start, const_hyp_idx})
-        assignin('base','obj',f)
 
         if (obj.nRestarts > 1)
           multi_start_points = obj.generate_multi_hyp_init(linear_hyp, lb, ub, obj.nRestarts - 1);
@@ -374,7 +379,7 @@ classdef GpNnModel < Model
               j = j + 1;
             end
           end
-          fprintf('GpModel.train(): %d / %d invalid starting points replaced.\n', c, length(invalid_idx));
+          fprintf('GpNnModel.train(): %d / %d invalid starting points replaced.\n', c, length(invalid_idx));
         end
 
         % DEBUG OUTPUT:
@@ -390,7 +395,7 @@ classdef GpNnModel < Model
             [obj, opt, lik, trainErr] = obj.trainFmincon(linear_hyp(i, :), obj.getDataset_X(), yTrain, lb, ub, f);
 
             if (trainErr)
-              fprintf('GpModel.train(): Trying CMA-ES...\n');
+              fprintf('GpNnModel.train(): Trying CMA-ES...\n');
               alg = 'cmaes';
             end
           end
@@ -423,8 +428,9 @@ classdef GpNnModel < Model
           % fprintf(2, 'GpModel.train(): .. model is not successfully trained, likelihood = %f\n', obj.trainLikelihood);
         end
       else
-        error('GpModel.train(): train algorithm "%s" is not known.\n', alg);
+        error('GpNnModel.train(): train algorithm "%s" is not known.\n', alg);
       end
+      obj.model.regressor = obj.model.fit(X, y);
     end
 
     function [y, sd2] = modelPredict(obj, X)
@@ -438,7 +444,7 @@ classdef GpNnModel < Model
         [y, gp_sd2] = gp(obj.hyp, obj.infFcn, obj.meanFcn, obj.covFcn, obj.likFcn, obj.getDataset_X(), yTrain, XWithShift);
         if any(isnan(y)) || isstruct(gp_sd2) || any(imag(y))
           y = []; sd2 = [];
-          fprintf(2, 'GpModel.predict(): inference failed!\n');
+          fprintf(2, 'GpNnModel.predict(): inference failed!\n');
         else
           % un-normalize in the f-space (if there is any)
           y = y * obj.stdY + obj.shiftY;
@@ -460,7 +466,18 @@ classdef GpNnModel < Model
         % end
       else
         y = []; sd2 = [];
-        fprintf(2, 'GpModel.(): the model is not yet trained!\n');
+        fprintf(2, 'GpNnModel.(): the model is not yet trained!\n');
+      end
+
+      % predicts the function values in new points X
+      if (obj.isTrained())
+          y = obj.model.predict(X);
+          y = double(y);
+          y = y.';
+          sd2 = var(y);
+      else
+          y = []; sd2 = [];
+          fprintf(2, 'GpNnModel.predict(): the model is not yet trained!\n');
       end
     end
     
@@ -503,7 +520,7 @@ classdef GpNnModel < Model
       try
         [hyp_, fval, iters] = minimize(obj.hyp, @gp, -100, obj.infFcn, obj.meanFcn, obj.covFcn, obj.likFcn, X, y);
       catch
-        fprintf(2, 'GpModel.trainMinimize(): Rasmussen''s minimize() failed.\n');
+        fprintf(2, 'GpNnModel.trainMinimize(): Rasmussen''s minimize() failed.\n');
         warning('on');
         obj.nErrors = modelTrainNErrors;
         return;
@@ -533,7 +550,7 @@ classdef GpNnModel < Model
       end
       if isnan(initial)
         % the initial point is not valid
-        fprintf('GpModel.trainFmincon(): Initial point is not valid.\n');
+        fprintf('GpNnModel.trainFmincon(): Initial point is not valid.\n');
         trainErr = true;
       else
         % training itself
@@ -551,7 +568,7 @@ classdef GpNnModel < Model
           end
         catch err
           obj.nErrors = modelTrainNErrors;
-          fprintf(2, 'GpModel.trainFmincon(): fmincon() ended with an exception: %s\n', err.message);
+          fprintf(2, 'GpNnModel.trainFmincon(): fmincon() ended with an exception: %s\n', err.message);
           trainErr = true;
         end
       end
@@ -581,7 +598,7 @@ classdef GpNnModel < Model
         try
           [opt, fval] = s_cmaes(f, linear_hyp', sigma, cmaesopt);
         catch err
-          fprintf(2, 'GpModel.trainCmaes(): CMA-ES ended with an exception: %s\n', err.message);
+          fprintf(2, 'GpNnModel.trainCmaes(): CMA-ES ended with an exception: %s\n', err.message);
           trainErr = true;
           obj.nErrors = modelTrainNErrors;
           return;
@@ -600,7 +617,7 @@ classdef GpNnModel < Model
         modelTrainNErrors = 0;
         [opt, fval] = s_cmaes(f, linear_hyp', sigma, cmaesopt);
       catch err
-        fprintf(2, 'GpModel.trainCmaes(): CMA-ES ended with an exception: %s\n', err.message);
+        fprintf(2, 'GpNnModel.trainCmaes(): CMA-ES ended with an exception: %s\n', err.message);
         trainErr = true;
         obj.nErrors = modelTrainNErrors;
         return;
@@ -708,7 +725,7 @@ function [c, ceq] = nonlincons(x)
   % checks if the values x(1:(end-4)) are within 2.5 off median
   MAX_DIFF = 2.5;
   ceq = [];
-  assert(size(x,2) == 1, 'GpModel.nonlincons(): Argument for nonlincons is not a vector');
+  assert(size(x,2) == 1, 'GpNnModel.nonlincons(): Argument for nonlincons is not a vector');
   c = zeros(size(x));
   % test only for covariance parameters
   % TODO: are there always 4 more parameters?!
